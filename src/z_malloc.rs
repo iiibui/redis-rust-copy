@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 extern "C" {
     fn malloc(size: usize) -> *const u8;
     fn free(ptr: *const u8);
@@ -69,6 +71,16 @@ pub fn z_try_malloc_usable(size: usize) -> (*const u8, usize) {
 #[inline]
 pub unsafe fn z_free(ptr: *const u8) {
     free(ptr);
+}
+
+#[inline]
+pub unsafe fn z_malloc(size: usize) -> *const u8 {
+    malloc(size)
+}
+
+#[inline]
+pub unsafe fn z_malloc_of_type<T>() -> *const T {
+    z_malloc(size_of::<T>()) as *const T
 }
 
 #[inline]
