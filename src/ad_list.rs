@@ -2,55 +2,32 @@ use std::ptr::null;
 
 use crate::z_malloc::{z_free, z_malloc_of_type};
 
-pub trait Value: Copy + PartialEq {
-    fn free(self);
-}
-
-macro_rules! plain_value_impl {
-    ($t:ty) => {
-        impl Value for $t {
-            fn free(self) {}
-        }
-    };
-}
-
-plain_value_impl!(i8);
-plain_value_impl!(u8);
-plain_value_impl!(i16);
-plain_value_impl!(u16);
-plain_value_impl!(i32);
-plain_value_impl!(&i32);
-plain_value_impl!(u32);
-plain_value_impl!(i64);
-plain_value_impl!(u64);
-plain_value_impl!(isize);
-plain_value_impl!(usize);
-plain_value_impl!(f32);
-plain_value_impl!(f64);
-plain_value_impl!(bool);
-
-pub struct Node<T: Value> {
+pub struct Node<T: Copy + PartialEq> {
     prev: *const Node<T>,
     next: *const Node<T>,
-    value: T,
+    pub value: T,
 }
 
-pub struct List<T: Value> {
+pub struct List<T: Copy + PartialEq> {
     head: *const Node<T>,
     tail: *const Node<T>,
     len: usize,
+    value_clone: Option<fn(T)->T>,
+    value_drop: Option<fn(T)>,
+    value_equals: Option<fn(T, T)->bool>,
 }
 
 enum ItDirection {
     HeadToTail,
     TailToHead,
 }
-pub struct It<T: Value> {
+
+pub struct It<T: Copy + PartialEq> {
     next: *const Node<T>,
     direction: ItDirection,
 }
 
-impl<T: Value> List<T> {
+impl<T: Copy + PartialEq> List<T> {
     // same as
     // list *listCreate(void)
     pub fn new() -> Self {
@@ -58,6 +35,9 @@ impl<T: Value> List<T> {
             head: null(),
             tail: null(),
             len: 0,
+            value_clone: None,
+            value_drop: None,
+            value_equals: None,
         };
 
         list
@@ -71,7 +51,9 @@ impl<T: Value> List<T> {
         let mut current = self.head;
         for _ in 0..len {
             let next = (*current).next;
-            (*current).value.free();
+            if let Some(value_drop) = self.value_drop {
+                value_drop((*current).value);
+            }
             z_free(current as *const u8);
             current = next;
         }
@@ -182,7 +164,9 @@ impl<T: Value> List<T> {
             (*(node.next as *mut Node<T>)).prev = node.prev;
         }
 
-        node.value.free();
+        if let Some(value_drop) = self.value_drop {
+            value_drop(node.value);
+        }
 
         z_free(node as *mut Node<T> as *const u8);
         self.len -= 1;
@@ -277,12 +261,30 @@ impl<T: Value> List<T> {
     // listNode *listSearchKey(list *list, void *key)
     pub fn search(&self, value: T) -> *const Node<T> {
         for n in self.iter() {
-                if unsafe { (*n).value } == value {
+            unsafe {
+                if let Some(value_equals) = self.value_equals {
+                    if value_equals((*n).value, value) {
+                        return n;
+                    }
+                } else if (*n).value == value {
                     return n;
                 }
             }
+        }
 
         null()
+    }
+
+    pub fn set_value_clone_method(&mut self, value_clone: Option<fn(T)->T>) {
+        self.value_clone = value_clone;
+    }
+
+    pub fn set_value_drop_method(&mut self, value_drop: Option<fn(T)>) {
+        self.value_drop = value_drop;
+    }
+
+    pub fn set_value_equals_method(&mut self, value_equals: Option<fn(T, T)->bool>) {
+        self.value_equals = value_equals;
     }
 
     pub fn len(&self) -> usize {
@@ -310,7 +312,7 @@ impl<T: Value> List<T> {
     }
 }
 
-impl<T: Value> Drop for List<T> {
+impl<T: Copy + PartialEq> Drop for List<T> {
     // same as
     // void listRelease(list *list)
     fn drop(&mut self) {
@@ -318,14 +320,21 @@ impl<T: Value> Drop for List<T> {
     }
 }
 
-impl<T: Value> Clone for List<T> {
+impl<T: Copy + PartialEq> Clone for List<T> {
     // same as
     // list *listDup(list *orig)
     fn clone(&self) -> Self {
         let mut copy = Self::new();
+        copy.value_clone = self.value_clone;
+        copy.value_equals = self.value_equals;
+        copy.value_drop = self.value_drop;
         unsafe {
             for n in self.iter() {
-                copy.push_back((*n).value);
+                if let Some(value_clone) = self.value_clone {
+                    copy.push_back(value_clone((*n).value));
+                } else {
+                    copy.push_back((*n).value);
+                }
             }
         }
 
@@ -339,7 +348,7 @@ impl<T: Value> Clone for List<T> {
     }
 }
 
-impl<T: Value> Iterator for It<T> {
+impl<T: Copy + PartialEq> Iterator for It<T> {
     type Item = *const Node<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -359,77 +368,4 @@ impl<T: Value> Iterator for It<T> {
 
         Some(current)
     }
-}
-
-#[test]
-fn test_list() {
-    let mut list = List::new();
-    assert!(list.is_empty());
-
-    list.push_front(1);
-    assert!(!list.is_empty());
-    unsafe {
-        assert_eq!((*list.first()).value, 1);
-    }
-
-    list.push_back(2);
-    unsafe {
-        assert_eq!((*list.last()).value, 2);
-        assert_eq!(list.len(), 2);
-    }
-
-    let elements: Vec<_> = list.iter()
-        .map(|n| unsafe{(*n).value})
-        .collect();
-    assert_eq!(elements.as_slice(), &[1, 2]);
-
-    unsafe {
-        assert_eq!((*list.get(0)).value, 1);
-        assert_eq!((*list.get(-1)).value, 2);
-        assert!(list.get(2).is_null());
-        assert!(list.get(-3).is_null());
-    }
-
-    list.move_head_to_tail();
-    unsafe {
-        assert_eq!((*list.first()).value, 2);
-        assert_eq!((*list.last()).value, 1);
-    }
-
-    list.move_tail_to_head();
-    unsafe {
-        assert_eq!((*list.first()).value, 1);
-        assert_eq!((*list.last()).value, 2);
-    }
-
-    let mut other = list.clone();
-    other.move_tail_to_head();
-    list.push_back(3).append(&mut other);
-    assert!(other.is_empty());
-
-    let elements: Vec<_> = list.iter()
-        .map(|n| unsafe{(*n).value})
-        .collect();
-    assert_eq!(elements.as_slice(), &[1, 2, 3, 2, 1]);
-
-    unsafe { list.remove(list.search(3) as *mut Node<_>); }
-    let elements: Vec<_> = list.iter()
-        .map(|n| unsafe{(*n).value})
-        .collect();
-    assert_eq!(elements.as_slice(), &[1, 2, 2, 1]);
-
-    list.move_head_to_tail();
-    let elements: Vec<_> = list.rev_iter()
-        .map(|n| unsafe{(*n).value})
-        .collect();
-    assert_eq!(elements.as_slice(), &[1, 1, 2, 2]);
-
-    unsafe {
-        list.insert_node(list.first() as *mut Node<_>, 3, false);
-        list.insert_node(list.last() as *mut Node<_>, 3, true);
-    }
-    let elements: Vec<_> = list.rev_iter()
-        .map(|n| unsafe{(*n).value})
-        .collect();
-    assert_eq!(elements.as_slice(), &[3, 1, 1, 2, 2, 3]);
 }
