@@ -12,6 +12,7 @@ extern "C" {
 }
 
 #[cfg(target_os = "macos")]
+#[inline]
 unsafe fn z_malloc_size(ptr: *const u8) -> usize {
     malloc_size(ptr)
 }
@@ -89,6 +90,6 @@ pub unsafe fn z_realloc_usable(ptr: *const u8, size: usize) -> (*const u8, usize
     if ptr.is_null() {
         (ptr, 0)
     } else {
-        (ptr, size)
+        (ptr, z_malloc_size(ptr))
     }
 }

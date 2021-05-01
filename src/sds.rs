@@ -247,7 +247,7 @@ impl Sds {
 
         if !init.is_null() {
             unsafe {
-                init.copy_to(sds.0 as *mut u8, init_len);
+                init.copy_to_nonoverlapping(sds.0 as *mut u8, init_len);
             }
         }
 
@@ -294,7 +294,7 @@ impl Sds {
                     panic!("s_malloc_usable {} size error", hdr_len + new_len);
                 }
                 let new_s = new_sh.offset(hdr_len as isize) as *mut u8;
-                self.0.copy_to(new_s, len);
+                self.0.copy_to_nonoverlapping(new_s, len);
                 if !self.is_global_empty() {
                     s_free(sh);
                 }
