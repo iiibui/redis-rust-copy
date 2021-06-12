@@ -1,8 +1,9 @@
 use std::mem::size_of;
 use crate::int_set::Encoding::{INT64, INT16, INT32};
 use crate::{z_malloc_usable, z_realloc_usable, z_free};
+use std::fmt::{Display, Formatter, Debug};
 
-#[derive(PartialOrd, PartialEq, Copy, Clone)]
+#[derive(PartialOrd, PartialEq, Copy, Clone, Debug)]
 enum Encoding {
     INT16 = size_of::<i16>() as isize,
     INT32 = size_of::<i32>() as isize,
@@ -31,6 +32,7 @@ impl Encoding {
 
 pub struct IntSet(*const IntSetInner);
 
+#[repr(C)]
 struct IntSetInner {
     encoding: Encoding,
     len: u16,
@@ -77,7 +79,9 @@ impl IntSet {
             size  += size_of::<IntSetInner>();
             unsafe {
                 let (ptr, usable) = if self.is_global_empty() {
-                    z_malloc_usable(size as usize)
+                    let (ptr, usable) = z_malloc_usable(size as usize);
+                    self.0.copy_to_nonoverlapping(ptr as *mut IntSetInner, 1);
+                    (ptr, usable)
                 } else {
                     z_realloc_usable(self.0 as *const u8, size)
                 };
@@ -306,7 +310,7 @@ impl IntSet {
     // uint8_t intsetGet(intset *is, uint32_t pos, int64_t *value)
     pub fn get(&self, index: isize) -> Option<i64> {
         if index < self.inner_ref().len as isize {
-            unsafe { return Some(self.get_unchecked(0)); }
+            unsafe { return Some(self.get_unchecked(index)); }
         }
 
         return None;
@@ -343,11 +347,11 @@ impl IntSet {
     // like
     // static void _intsetSet(intset *is, int pos, int64_t value)
     unsafe fn set_unchecked(&mut self, index: isize, value: i64) {
-        let mut inner = self.inner_mut_ref();
+        let inner = self.inner_mut_ref();
         Self::set_with_encoded(inner.contents.as_mut_ptr(), index, value, inner.encoding);
     }
 
-    unsafe fn set_with_encoded(contents: *const u8, index: isize, value: i64, enc: Encoding) {
+    unsafe fn set_with_encoded(contents: *mut u8, index: isize, value: i64, enc: Encoding) {
         match enc {
             INT16 => {
                 let contents = contents as *mut i16;
@@ -375,8 +379,40 @@ impl Drop for IntSet {
     }
 }
 
+impl Display for IntSet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let len = self.len() as isize;
+        let _ = write!(f, "{}", '[');
+        unsafe {
+            for i in 0..len {
+                let _ = write!(f, "{}, ", self.get_unchecked(i));
+            }
+        }
+        write!(f, "{}", ']')
+    }
+}
+
 #[test]
 fn test_basic() {
-    assert!(Encoding::INT16 < Encoding::INT32);
-    println!("size: {}, value: {}, {}", size_of::<IntSet>(), Encoding::INT32.byte_size(), Encoding::INT32.byte_size())
+    assert_eq!(6, std::mem::size_of::<IntSetInner>());
+
+    let mut set = IntSet::new();
+    for i in 0..10 {
+        set.insert(i);
+        assert_eq!(Some(i), set.get(i as isize));
+    }
+
+    assert_eq!(Encoding::INT16, set.inner_ref().encoding);
+
+    let v = i16::MIN as i64 - 1;
+    set.insert(v);
+    assert_eq!(Some(v), set.get(0));
+    assert_eq!(Encoding::INT32, set.inner_ref().encoding);
+
+    let v = i32::MAX as i64 + 1;
+    set.insert(v);
+    assert_eq!(Some(v), set.get((set.len() - 1) as isize));
+    assert_eq!(Encoding::INT64, set.inner_ref().encoding);
+
+    println!("{}", set);
 }
